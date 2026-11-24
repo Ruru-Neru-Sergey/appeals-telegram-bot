@@ -32,9 +32,11 @@ GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/"
 # Подпись к фото в Telegram ограничена 1024 символами, поэтому текст режем заранее
 MAX_TEXT_LENGTH = 800
 MAX_ADDRESS_LENGTH = 200
+MAX_TOPIC_LENGTH = 60
 
 # Тема обращения -> код, который добавляется к номеру обращения
 TOPICS = {"ЖКХ": 111, "Мусор": 222, "Транспорт": 333}
+CUSTOM_TOPIC_CODE = 444  # код для темы, которую житель написал сам
 
 
 # --------------------------------------------------------------------------
@@ -46,6 +48,7 @@ CB_NEW_APPEAL = "new_appeal"
 BTN_MAIN_MENU = "Назад в главное меню"
 BTN_BACK = "Назад к выбору темы обращения"
 BTN_RESTART = "Заново написать обращение"
+BTN_CUSTOM_TOPIC = "Своя тема"
 BTN_CONTINUE = "Продолжить"
 BTN_MEDIA_OK = "Да, это"
 BTN_MEDIA_AGAIN = "Отправить заново"
@@ -64,13 +67,14 @@ GREETING = (
 )
 
 TOPICS_TEXT = (
-    "В данный момент мы принимаем обращения связанные с посёлком (Романовка) "
-    "только на следующие темы:\n"
+    "В данный момент мы принимаем обращения, связанные с посёлком (Романовка), "
+    "по следующим темам:\n"
     "1) ЖКХ (к нему относится: водоснабжение и электроснабжение)\n"
     "2) Мусор (к нему относится: несанкционированные свалки)\n"
     "3) Транспорт (например, отсутствие автобусов, которые следуют чётко "
     "расписанию, указанному на сайте их организации)\n\n"
-    "Выберите одну из предложенных тем"
+    "Если Ваш вопрос сюда не подходит, нажмите «Своя тема» и напишите её сами.\n\n"
+    "Выберите тему обращения"
 )
 
 RULES_TEXT = (
@@ -90,6 +94,7 @@ class Step:
     """Шаги диалога. Для каждого шага ниже есть свой обработчик."""
     IDLE = "idle"
     CHOOSING_TOPIC = "choosing_topic"
+    WAITING_CUSTOM_TOPIC = "waiting_custom_topic"
     READING_RULES = "reading_rules"
     WAITING_MEDIA = "waiting_media"
     CONFIRMING_MEDIA = "confirming_media"
@@ -108,6 +113,7 @@ class Session:
     """Черновик обращения одного пользователя (хранится в памяти)."""
     step: str = Step.IDLE
     topic: Optional[str] = None
+    topic_code: Optional[int] = None
     media_kind: Optional[str] = None  # "photo" или "video"
     media_id: Optional[str] = None
     text: Optional[str] = None
@@ -118,7 +124,7 @@ class Session:
 
     def reset(self):
         self.step = Step.IDLE
-        self.topic = self.media_kind = self.media_id = None
+        self.topic = self.topic_code = self.media_kind = self.media_id = None
         self.text = self.address = None
         self.reply_user_id = self.reply_appeal_id = None
 
@@ -254,7 +260,7 @@ def show_topics(chat_id: int):
     bot.send_message(
         chat_id,
         TOPICS_TEXT,
-        reply_markup=keyboard(*TOPICS, BTN_MAIN_MENU, row_width=1),
+        reply_markup=keyboard(*TOPICS, BTN_CUSTOM_TOPIC, BTN_MAIN_MENU, row_width=1),
     )
 
 
@@ -321,16 +327,41 @@ def handle_idle(message, session):
     bot.send_message(message.chat.id, "Чтобы начать, нажмите /start")
 
 
+def show_rules(chat_id: int, session: Session):
+    session.step = Step.READING_RULES
+    bot.send_message(chat_id, RULES_TEXT, reply_markup=keyboard(BTN_CONTINUE, BTN_BACK))
+
+
 def handle_topic(message, session):
+    if message.text == BTN_CUSTOM_TOPIC:
+        session.step = Step.WAITING_CUSTOM_TOPIC
+        bot.send_message(
+            message.chat.id,
+            "Напишите тему обращения (коротко, одной фразой)",
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
+        return
+
     if message.text not in TOPICS:
         bot.send_message(message.chat.id, "Выберите тему кнопкой ниже")
         return
 
     session.topic = message.text
-    session.step = Step.READING_RULES
-    bot.send_message(
-        message.chat.id, RULES_TEXT, reply_markup=keyboard(BTN_CONTINUE, BTN_BACK)
-    )
+    session.topic_code = TOPICS[message.text]
+    show_rules(message.chat.id, session)
+
+
+def handle_custom_topic(message, session):
+    topic = (message.text or "").strip()
+    if not topic or len(topic) > MAX_TOPIC_LENGTH:
+        bot.send_message(
+            message.chat.id, f"Напишите тему текстом, не длиннее {MAX_TOPIC_LENGTH} символов"
+        )
+        return
+
+    session.topic = topic
+    session.topic_code = CUSTOM_TOPIC_CODE
+    show_rules(message.chat.id, session)
 
 
 def handle_rules(message, session):
@@ -465,7 +496,7 @@ def handle_send_confirm(message, session):
 def submit_appeal(message, session):
     chat_id = message.chat.id
     user_number = get_user_number(chat_id, message.from_user.username)
-    appeal_id = f"{user_number}{TOPICS[session.topic]}"
+    appeal_id = f"{user_number}{session.topic_code}"
 
     # подтверждение жителю
     bot.send_message(chat_id, f"Айди обращения: {appeal_id}", reply_markup=types.ReplyKeyboardRemove())
@@ -538,6 +569,7 @@ def handle_admin_reply(message, session):
 STEP_HANDLERS = {
     Step.IDLE: handle_idle,
     Step.CHOOSING_TOPIC: handle_topic,
+    Step.WAITING_CUSTOM_TOPIC: handle_custom_topic,
     Step.READING_RULES: handle_rules,
     Step.WAITING_MEDIA: handle_media,
     Step.CONFIRMING_MEDIA: handle_media_confirm,
