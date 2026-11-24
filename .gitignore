@@ -1,0 +1,13 @@
+# секреты и данные
+config.py
+.env
+*.db
+
+# окружение и мусор
+venv/
+.venv/
+Scripts/
+Lib/
+__pycache__/
+*.pyc
+.idea/
